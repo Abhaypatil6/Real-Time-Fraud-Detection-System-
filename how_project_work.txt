@@ -1,0 +1,145 @@
+Listed directory Fraud-Detection-Pipeline
+Viewed README.md:1-200
+Viewed main.py:1-47
+Viewed config.py:1-48
+Viewed generator.py:1-217
+Viewed preprocessor.py:1-146
+Viewed ensemble_model.py:1-143
+Viewed trainer.py:1-71
+Viewed evaluator.py:1-93
+Viewed mock_kafka.py:1-49
+Viewed producer.py:1-89
+Viewed consumer.py:1-143
+Viewed app.py:1-233
+Viewed app.js:1-453
+Viewed requirements.txt:1-10
+Listed directory docker
+Viewed docker-compose.yml:1-49
+Viewed Dockerfile:1-26
+
+This is a production-grade, real-time fraud detection pipeline designed with a modular architecture. Below is a comprehensive walkthrough of how the system works—from training the machine learning model to real-time data streaming and the live interactive dashboard.
+
+---
+
+### 1. High-Level Architecture
+The system consists of five main components working in harmony:
+
+```
+[Synthetic Generator] ──(async events)──> [Kafka Producer]
+                                                 │
+                                                 ▼
+                                     [Kafka topic: transactions]
+                                                 │
+                                                 ▼
+[WebSocket Broadcast] <──(enrich/score)── [Kafka Consumer]
+        │                                        │
+        ▼ (push stream)                          ▼ (publish alerts)
+[Glassmorphism Dashboard]            [Kafka topic: fraud-alerts]
+```
+
+To enable friction-free local development without installing external brokers, the application ships with a **mock in-memory broker** (`src/streaming/mock_kafka.py`) that utilizes `asyncio.Queue` and a pub/sub pattern. For production deployments, this can be seamlessly swapped with a live Apache Kafka broker using the provided Docker Compose configuration.
+
+---
+
+### 2. The Machine Learning Engine (`src/models/`, `src/data/`)
+
+The pipeline relies on a highly calibrated machine learning model to score transactions with extremely low latency ($<5\text{ ms}$).
+
+#### A. Synthetic Data Generator (`src/data/generator.py`)
+To train the model, a realistic transaction generator simulates credit card transactions based on dynamic probability distributions. It injects a realistic **2.5% fraud rate** and simulates six specific fraud patterns:
+*   **Card Not Present**: Online transactions with multiple failed authorization attempts (`failed_attempts_24h`).
+*   **Account Takeover**: Unexpected country changes (`is_high_risk_country`) combined with high distance from home.
+*   **High Velocity**: Bursts of transactions in short windows (`velocity_1h`, `velocity_24h`).
+*   **Unusual Location**: Transactions in foreign/high-risk countries.
+*   **Large Amount**: Spikes in luxury/high-risk categories (e.g., `crypto_exchange`, `jewelry`, `wire_transfer`).
+*   **After Hours**: High-amount, high-velocity transactions executed between 1 AM and 4 AM.
+
+#### B. Preprocessing & Feature Engineering (`src/data/preprocessor.py`)
+Raw transactions are converted into feature vectors using `FraudPreprocessor`:
+*   **Categorical Encodings**: `merchant_category` and `country` are label-encoded (using cached encoders to handle unseen labels at inference time).
+*   **Feature Engineering**:
+    *   `log_amount`: Log-scaled transaction value to counteract heavily right-skewed transaction amounts.
+    *   `velocity_ratio`: $\frac{\text{velocity\_1h}}{\text{velocity\_24h} + 1}$ to capture sudden acceleration in spending.
+    *   `risk_score_raw`: A custom heuristic combination of geographic risk, category risk, night-time indicator, and failed attempts.
+*   **Standard Scaling**: Numerical values are normalized using scikit-learn's `StandardScaler` so that ensemble weights evaluate fairly.
+
+#### C. Platt Scaled Soft-Voting Ensemble (`src/models/ensemble_model.py`)
+To maximize accuracy and minimize false positives (by roughly **35%**), the pipeline implements a **soft-voting ensemble**:
+1.  **Classifiers**: Combines a **Random Forest Classifier** (200 estimators, depth capped at 15 to prevent overfitting, and balanced class weights to handle minority class fraud) with a **Gradient Boosting Classifier** (150 estimators, learning rate of 0.05).
+2.  **Probability Calibration (Platt Scaling)**: Both models are wrapped in `CalibratedClassifierCV(method="sigmoid")`. Standard classifiers often generate distorted probability distributions. Calibrating them with Platt scaling maps decision margins onto mathematically sound probability values (sigmoid probability estimates).
+3.  **Tuned Decision Threshold**: The pipeline uses a customized threshold of **0.45** (instead of the standard 0.5) tuned specifically to optimize the Precision-Recall curve, ensuring suspicious activity is flagged early without causing a flood of false alerts.
+4.  **Risk Categorization**: Based on the calibrated probability $p$:
+    *   $p < 20\%$: **LOW**
+    *   $20\% \le p < 45\%$: **MEDIUM**
+    *   $45\% \le p < 70\%$: **HIGH** (flags fraud alert)
+    *   $p \ge 70\%$: **CRITICAL** (flags high-priority fraud alert)
+
+---
+
+### 3. Real-Time Streaming (`src/streaming/`)
+
+The system processes and distributes transactions asynchronously:
+
+*   **Transaction Producer (`producer.py`)**: Run inside an async loop, this class simulates real-time activity by pushing single transactions to the `transactions` topic at a configurable speed (Transactions Per Second / TPS).
+*   **Mock Kafka Broker (`mock_kafka.py`)**: Uses a singleton broker that handles topics in-process via `asyncio.Queue` and dispatches messages to registered callbacks.
+*   **Fraud Detection Consumer (`consumer.py`)**:
+    1.  Subscribes to the `transactions` topic.
+    2.  For every transaction received, it starts a high-resolution timer (`time.perf_counter()`).
+    3.  Feeds the transaction dictionary into the preprocessor (`transform_single`) and scores it with the ensemble model (`predict_single`).
+    4.  Stops the timer to measure pipeline latency (typically **1–3 ms**).
+    5.  Appends results to an in-memory rolling window of the 50 most recent transactions.
+    6.  If the model flags fraud (`is_fraud = 1`), the consumer publishes the detailed alert to the `fraud-alerts` topic.
+    7.  Broadcasts the enriched transaction (including probability, latency, and risk status) to the UI via an active WebSocket callback.
+
+---
+
+### 4. API Layer (`src/api/app.py`)
+
+Powered by **FastAPI**, the server hosts REST endpoints and coordinates background services:
+
+*   **Startup Lifecycle Event**:
+    1.  Loads the trained model (`ensemble_model.pkl`) and preprocessor (`scaler.pkl`) from the `models/` directory.
+    2.  *Fallback*: If the models haven't been trained yet, the API boots up in a **demo mode** utilizing ground-truth fields so developers can still experience the UI immediately.
+    3.  Launches the producer and consumer tasks in the background using `asyncio.create_task()`.
+*   **WebSocket Interface (`/ws`)**: Accepts connections from browser dashboards, registers clients in a thread-safe list, and broadcasts transaction events as they stream through the consumer.
+*   **REST Endpoints**:
+    *   `GET /api/stats`: Serves real-time consumer statistics (average latency, processed counts, fraud rates).
+    *   `GET /api/metrics`: Exposes the training metrics (F1-score, Precision, Recall, specificity, ROC-AUC) saved during training.
+    *   `GET /api/feature_importance`: Delivers feature importances dynamically computed by the ensemble model.
+    *   `POST /api/predict`: Enables external services to score individual transactions in a single HTTP request.
+    *   `POST /api/pipeline/speed`: Dynamically changes the transaction generation rate (TPS) during runtime.
+
+---
+
+### 5. Live Glassmorphism Dashboard (`dashboard/`)
+
+The front-end is written in vanilla HTML, CSS, and JS, featuring a modern dark-mode glassmorphic interface:
+
+*   **Real-time Charts (`app.js` using Chart.js)**:
+    *   **Volume Chart**: A stacked bar chart showing Legitimate vs. Fraud transaction counts grouped in 5-second buckets.
+    *   **Fraud Rate Chart**: A smooth line chart plotting the moving average percentage of fraudulent transactions.
+    *   **Risk Distribution**: A doughnut chart illustrating the current balance of Low, Medium, High, and Critical alerts.
+*   **Live Metrics Panel**: Automatically pulls static statistics (F1, Precision, Recall, and ROC-AUC) directly from the API endpoints on load, and updates live transaction velocity counters.
+*   **Dynamic Features Panel**: Displays a bar chart ranking the top 10 most influential features (like `velocity_ratio` or `failed_attempts_24h`) based on actual training results.
+*   **Toast Notifications**: Leverages the WebSocket stream to flash bright-red warnings instantly whenever a transaction labeled as **HIGH** or **CRITICAL** risk is detected.
+*   **Interactive Speed Controller**: A slider that sends POST requests to `/api/pipeline/speed` to control transaction volume in real-time.
+
+---
+
+### 6. Containerization & Production Scaling (`docker/`)
+
+To prepare this system for a production environment:
+1.  **Docker Compose (`docker/docker-compose.yml`)** spins up three networked containers:
+    *   **Zookeeper**: Coordinates the Kafka broker.
+    *   **Apache Kafka Broker**: Handles high-throughput stream persistence.
+    *   **Kafka UI**: A developer console exposed on `http://localhost:8080` to inspect partitions, topics, and message logs.
+    *   **Fraud Detection API**: The FastAPI container that reads from the real Kafka stream instead of the mock.
+2.  **Dockerfile (`docker/Dockerfile`)** uses a python-slim base, installs build dependencies, auto-triggers model training on startup (`python main.py train`) to ensure model artifacts exist, and boots the Uvicorn application.
+
+---
+
+### How to Run the Project
+To try the different features of the pipeline, you can run `main.py` with three modes:
+1.  **Training**: Run `python main.py train` to generate 50k samples, train the RF/GB models, evaluate metrics, and save serialized `.pkl` files.
+2.  **Serving**: Run `python main.py serve` to boot up the FastAPI app and start the streaming engine using the serialized model.
+3.  **Demo**: Run `python main.py demo` to complete training and start serving in one unified command.

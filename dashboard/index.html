@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FraudShield — Real-time Fraud Detection</title>
+  <meta name="description" content="Real-time fraud detection dashboard powered by ensemble ML (Random Forest + Gradient Boosting) and Apache Kafka streaming." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ── HEADER ── -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="logo-title">FraudShield</h1>
+          <span class="logo-sub">Real-time Detection Pipeline</span>
+        </div>
+      </div>
+    </div>
+    <div class="header-center">
+      <div class="status-pill" id="status-pill">
+        <span class="pulse-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="speed-control">
+        <label for="tps-slider">Stream Speed</label>
+        <input type="range" id="tps-slider" min="0.5" max="10" step="0.5" value="2" />
+        <span id="tps-label">2 TPS</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── MAIN ── -->
+  <main class="main">
+
+    <!-- ── KPI CARDS ── -->
+    <section class="kpi-grid" aria-label="Key Performance Indicators">
+      <div class="kpi-card" id="kpi-processed">
+        <div class="kpi-icon kpi-icon--blue">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-label">Transactions Processed</span>
+          <span class="kpi-value" id="val-processed">0</span>
+          <span class="kpi-delta" id="delta-processed">— /min</span>
+        </div>
+      </div>
+
+      <div class="kpi-card kpi-card--danger" id="kpi-fraud">
+        <div class="kpi-icon kpi-icon--red">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-label">Fraud Detected</span>
+          <span class="kpi-value" id="val-fraud">0</span>
+          <span class="kpi-delta" id="delta-fraud">0.00% rate</span>
+        </div>
+      </div>
+
+      <div class="kpi-card" id="kpi-latency">
+        <div class="kpi-icon kpi-icon--green">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-label">Avg Detection Latency</span>
+          <span class="kpi-value" id="val-latency">—</span>
+          <span class="kpi-delta">milliseconds</span>
+        </div>
+      </div>
+
+      <div class="kpi-card" id="kpi-precision">
+        <div class="kpi-icon kpi-icon--purple">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-label">Model Precision</span>
+          <span class="kpi-value" id="val-precision">—</span>
+          <span class="kpi-delta" id="delta-fp">ROC-AUC: —</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── CHARTS ROW ── -->
+    <section class="charts-row">
+      <!-- Fraud Rate Over Time -->
+      <div class="card chart-card">
+        <div class="card-header">
+          <h2>Fraud Rate Over Time</h2>
+          <span class="badge badge--live">LIVE</span>
+        </div>
+        <canvas id="chart-fraud-rate" height="200"></canvas>
+      </div>
+
+      <!-- Transaction Volume -->
+      <div class="card chart-card">
+        <div class="card-header">
+          <h2>Transaction Volume</h2>
+          <span class="badge badge--blue">STREAM</span>
+        </div>
+        <canvas id="chart-volume" height="200"></canvas>
+      </div>
+    </section>
+
+    <!-- ── BOTTOM ROW ── -->
+    <section class="bottom-row">
+      <!-- Risk Distribution Donut -->
+      <div class="card donut-card">
+        <div class="card-header">
+          <h2>Risk Distribution</h2>
+        </div>
+        <canvas id="chart-risk" height="220"></canvas>
+        <div class="legend" id="risk-legend"></div>
+      </div>
+
+      <!-- Feature Importance Bar -->
+      <div class="card importance-card">
+        <div class="card-header">
+          <h2>Feature Importance</h2>
+          <span class="badge badge--purple">ML MODEL</span>
+        </div>
+        <div id="feature-bars"></div>
+      </div>
+
+      <!-- Model Metrics -->
+      <div class="card metrics-card">
+        <div class="card-header">
+          <h2>Model Performance</h2>
+          <span class="badge badge--green">ENSEMBLE</span>
+        </div>
+        <div class="metrics-grid" id="metrics-grid">
+          <div class="metric-row"><span>F1 Score</span><span id="m-f1">—</span></div>
+          <div class="metric-row"><span>ROC-AUC</span><span id="m-auc">—</span></div>
+          <div class="metric-row"><span>Precision</span><span id="m-prec">—</span></div>
+          <div class="metric-row"><span>Recall</span><span id="m-rec">—</span></div>
+          <div class="metric-row"><span>Specificity</span><span id="m-spec">—</span></div>
+          <div class="metric-row highlight"><span>FP Reduction</span><span id="m-fpr">—</span></div>
+          <div class="metric-row"><span>True Positives</span><span id="m-tp">—</span></div>
+          <div class="metric-row"><span>False Positives</span><span id="m-fp">—</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── ALERTS FEED ── -->
+    <section class="card alerts-card">
+      <div class="card-header">
+        <h2>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+          Live Transaction Feed
+        </h2>
+        <div class="feed-controls">
+          <label class="toggle-label">
+            <input type="checkbox" id="fraud-only-toggle" />
+            <span>Fraud only</span>
+          </label>
+          <button class="btn-clear" id="btn-clear">Clear</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="txn-table">
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Transaction ID</th>
+              <th>Amount</th>
+              <th>Category</th>
+              <th>Country</th>
+              <th>Prob.</th>
+              <th>Latency</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="txn-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── FRAUD ALERT TOAST ── -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

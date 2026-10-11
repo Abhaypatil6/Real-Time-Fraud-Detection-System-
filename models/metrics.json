@@ -1,0 +1,18 @@
+{
+  "threshold": 0.45,
+  "total_transactions": 10000,
+  "total_fraud": 250,
+  "true_positives": 247,
+  "false_positives": 0,
+  "true_negatives": 9750,
+  "false_negatives": 3,
+  "precision": 1.0,
+  "recall": 0.988,
+  "f1_score": 0.994,
+  "roc_auc": 1.0,
+  "avg_precision_score": 0.9998,
+  "false_positive_rate": 0.0,
+  "false_negative_rate": 0.012,
+  "specificity": 1.0,
+  "fp_reduction_vs_baseline_pct": 100.0
+}
